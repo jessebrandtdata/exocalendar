@@ -81,8 +81,8 @@ Radicale-style filesystem layout, human-inspectable and backup-friendly:
 - ETag = content hash. Calendar ctag = hash over member ETags.
 - sync-collection support requires remembering deletions: per-calendar
   journal of (seq, href, changed|deleted); sync-token = seq number. Journal
-  is pruned past a retention window; a too-old token gets 410 per spec, and
-  clients re-fetch.
+  is pruned past a retention window; a too-old token gets 403 with
+  DAV:valid-sync-token per RFC 6578 §3.2, and clients re-fetch.
 - Concurrency: process-wide per-calendar locks; atomic writes
   (tmp + rename). Single-process server, so no cross-process locking in v1.
 
