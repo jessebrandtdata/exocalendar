@@ -1,0 +1,9 @@
+#!/bin/sh
+# CD deploy hook: install the package user-space and prove the suite is green.
+# Runs under systemd's default PATH — ~/.local/bin is added explicitly.
+set -e
+cd "$(dirname "$0")"
+export PATH="$HOME/.local/bin:$PATH"
+
+python3 -m pip install --user --break-system-packages -q -e ".[dev]"
+python3 -m pytest -q
