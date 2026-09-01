@@ -61,6 +61,8 @@ def escape_text(value: str) -> str:
         value.replace("\\", "\\\\")
         .replace(";", "\\;")
         .replace(",", "\\,")
+        .replace("\r\n", "\n")
+        .replace("\r", "\n")
         .replace("\n", "\\n")
     )
 
@@ -295,7 +297,9 @@ class _Observance:
         self.tzname = name.value if name else None
         self.dtstart = _parse_basic_dt(comp.get("DTSTART").value)
         rrule_line = comp.get("RRULE")
-        self.rrule = _parse_tz_rrule(rrule_line.value) if rrule_line else None
+        self.rrule = (
+            _parse_tz_rrule(rrule_line.value, self.dtstart) if rrule_line else None
+        )
         self.rdates = []
         for rd in comp.get_all("RDATE"):
             for v in rd.value.split(","):
@@ -325,6 +329,34 @@ class _Observance:
             return []
         return [t]
 
+    def latest_transition(self, upto: datetime, in_utc: bool) -> datetime | None:
+        """Latest transition at-or-before `upto`, unbounded lookback.
+
+        `in_utc=False`: compare in local wall time (returns wall time).
+        `in_utc=True`: compare the transition's UTC instant (`t - offset_from`)
+        against a naive-UTC `upto` (returns that UTC instant).
+        """
+        if self.rrule is None:
+            best = None
+            for t in [self.dtstart] + self.rdates:
+                cmp = (t - self.offset_from) if in_utc else t
+                if cmp <= upto and (best is None or cmp > best):
+                    best = cmp
+            return best
+        _month, _byday, _bymonthday, until = self.rrule
+        year = upto.year + 1
+        if until is not None:
+            until_local = until.replace(tzinfo=None) + self.offset_from
+            year = min(year, until_local.year)
+        floor = max(self.dtstart.year, year - 500)  # rule-less gaps are bounded
+        while year >= floor:
+            for t in reversed(self.transitions_for_year(year)):
+                cmp = (t - self.offset_from) if in_utc else t
+                if cmp <= upto:
+                    return cmp
+            year -= 1
+        return None
+
 
 _WEEKDAYS = ["MO", "TU", "WE", "TH", "FR", "SA", "SU"]
 
@@ -344,12 +376,12 @@ def _nth_weekday(year: int, month: int, weekday: int, n: int) -> int | None:
         return None
 
 
-def _parse_tz_rrule(text: str):
+def _parse_tz_rrule(text: str, dtstart: datetime):
     """Parse the restricted yearly RRULE shapes VTIMEZONEs use."""
-    parts = dict(p.split("=", 1) for p in text.split(";") if p)
+    parts = dict(p.split("=", 1) for p in text.split(";") if "=" in p)
     if parts.get("FREQ") != "YEARLY":
         raise TZUnknown(f"unsupported VTIMEZONE RRULE: {text}")
-    month = int(parts["BYMONTH"].split(",")[0])
+    month = int(parts["BYMONTH"].split(",")[0]) if "BYMONTH" in parts else dtstart.month
     byday = None
     bymonthday = None
     if "BYDAY" in parts:
@@ -387,43 +419,92 @@ class _VTimezone(tzinfo):
         self._tzid = tzid
         self._observances = observances
 
-    def _active(self, wall: datetime) -> _Observance:
+    def _active(self, upto: datetime, in_utc: bool) -> _Observance | None:
+        best = self._active_with_time(upto, in_utc)
+        return best[1] if best is not None else None
+
+    def _active_with_time(
+        self, upto: datetime, in_utc: bool
+    ) -> tuple[datetime, "_Observance"] | None:
+        """(latest transition ≤ upto, its observance), or None before history."""
         best: tuple[datetime, _Observance] | None = None
         for obs in self._observances:
-            for year in (wall.year - 1, wall.year):
-                for t in obs.transitions_for_year(year):
-                    if t <= wall and (best is None or t > best[0]):
-                        best = (t, obs)
-        if best is None:
-            # before all transitions: earliest observance's FROM side
-            first = min(
-                self._observances,
-                key=lambda o: o.dtstart,
+            t = obs.latest_transition(upto, in_utc)
+            if t is not None and (best is None or t > best[0]):
+                best = (t, obs)
+        return best
+
+    def _next_transition(
+        self, wall: datetime
+    ) -> tuple[datetime, "_Observance"] | None:
+        best: tuple[datetime, _Observance] | None = None
+        for obs in self._observances:
+            candidates = (
+                [obs.dtstart] + obs.rdates
+                if obs.rrule is None
+                else [
+                    t
+                    for y in (wall.year, wall.year + 1)
+                    for t in obs.transitions_for_year(y)
+                ]
             )
-            return first
-        return best[1]
+            for t in candidates:
+                if t > wall and (best is None or t < best[0]):
+                    best = (t, obs)
+        return best
+
+    def _earliest(self) -> _Observance:
+        return min(self._observances, key=lambda o: o.dtstart)
 
     def utcoffset(self, dt):
         if dt is None:
             return None
-        return self._active(dt.replace(tzinfo=None)).offset_to
+        wall = dt.replace(tzinfo=None)
+        obs = self._active(wall, in_utc=False)
+        # before all transitions the pre-transition (FROM) offset applies
+        offset = obs.offset_to if obs is not None else self._earliest().offset_from
+        if getattr(dt, "fold", 0):
+            # second pass of a repeated (fall-back) hour: the next transition's
+            # offset applies within the window it repeats
+            nxt = self._next_transition(wall)
+            if nxt is not None:
+                t2, obs2 = nxt
+                shrink = offset - obs2.offset_to
+                if shrink > timedelta(0) and wall >= t2 - shrink:
+                    return obs2.offset_to
+        return offset
 
     def dst(self, dt):
         if dt is None:
             return None
-        obs = self._active(dt.replace(tzinfo=None))
+        obs = self._active(dt.replace(tzinfo=None), in_utc=False)
+        if obs is None:
+            return timedelta(0)
         return (obs.offset_to - obs.offset_from) if obs.is_daylight else timedelta(0)
 
     def tzname(self, dt):
         if dt is None:
             return self._tzid
-        return self._active(dt.replace(tzinfo=None)).tzname or self._tzid
+        obs = self._active(dt.replace(tzinfo=None), in_utc=False)
+        if obs is None:
+            return self._earliest().tzname or self._tzid
+        return obs.tzname or self._tzid
 
     def fromutc(self, dt):
+        # resolve in UTC: transition instants (t - offset_from) order totally,
+        # so the repeated wall hour after a fall-back stays unambiguous
         naive = dt.replace(tzinfo=None)
-        off = self._active(naive).offset_to
-        off = self._active(naive + off).offset_to
-        return (naive + off).replace(tzinfo=self)
+        best = self._active_with_time(naive, in_utc=True)
+        if best is None:
+            off = self._earliest().offset_from
+            return (naive + off).replace(tzinfo=self)
+        t_utc, obs = best
+        off = obs.offset_to
+        # inside the repeated hour just after a fall-back this is the second
+        # pass of the same wall time: mark it (PEP 495) so utcoffset() inverts
+        shrink = obs.offset_from - off
+        fold = 1 if shrink > timedelta(0) and naive - t_utc < shrink else 0
+        return (naive + off).replace(tzinfo=self, fold=fold)
 
     def __repr__(self):
         return f"_VTimezone({self._tzid!r})"
@@ -444,19 +525,20 @@ class TZResolver:
                 tzid_line = vtz.get("TZID")
                 if tzid_line is None:
                     continue
-                observances = [
-                    _Observance(c)
-                    for c in vtz.children
-                    if c.name in ("STANDARD", "DAYLIGHT")
-                    and c.get("TZOFFSETFROM") is not None
-                    and c.get("TZOFFSETTO") is not None
-                    and c.get("DTSTART") is not None
-                ]
+                try:
+                    observances = [
+                        _Observance(c)
+                        for c in vtz.children
+                        if c.name in ("STANDARD", "DAYLIGHT")
+                        and c.get("TZOFFSETFROM") is not None
+                        and c.get("TZOFFSETTO") is not None
+                        and c.get("DTSTART") is not None
+                    ]
+                except (ValueError, KeyError, TZUnknown):
+                    # a zone we cannot model falls through to host zoneinfo
+                    continue
                 if observances:
-                    try:
-                        zones[tzid_line.value] = _VTimezone(tzid_line.value, observances)
-                    except (ValueError, TZUnknown):
-                        continue
+                    zones[tzid_line.value] = _VTimezone(tzid_line.value, observances)
         return cls(zones)
 
     def resolve(self, tzid: str) -> tzinfo:
@@ -531,7 +613,7 @@ def serialize_dt(dtv: DTValue) -> tuple[str, list[tuple[str, list[str]]]]:
         return dtv.value.strftime("%Y%m%d"), [("VALUE", ["DATE"])]
     dt = dtv.value
     if dtv.tzid:
-        return dt.strftime("%Y%m%dT%H%M%S"), [("TZID", [dtv.tzid])]
+        return dt.strftime("%Y%m%dT%H%M%S"), [("TZID", [_quote_if_needed(dtv.tzid)])]
     if dt.tzinfo is not None:
         return dt.astimezone(timezone.utc).strftime("%Y%m%dT%H%M%SZ"), []
     return dt.strftime("%Y%m%dT%H%M%S"), []
@@ -544,7 +626,7 @@ _DURATION_RE = re.compile(
 
 def parse_duration(text: str) -> timedelta:
     m = _DURATION_RE.fullmatch(text)
-    if not m or text.rstrip("+-") in ("P", "PT"):
+    if not m or text.lstrip("+-") in ("P", "PT"):
         raise ValueError(f"bad duration: {text!r}")
     sign = -1 if m.group(1) == "-" else 1
     weeks, days, hours, minutes, seconds = (int(g or 0) for g in m.groups()[1:])

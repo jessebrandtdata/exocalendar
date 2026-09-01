@@ -1,1 +1,141 @@
-<!doctype html><title>exocalendar</title>placeholder
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>exocalendar</title>
+<link rel="stylesheet" href="style.css">
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><rect x='10' y='18' width='80' height='72' rx='10' fill='%231b9e77'/><rect x='10' y='18' width='80' height='20' rx='10' fill='%23146b52'/><rect x='26' y='8' width='8' height='18' rx='4' fill='%23444'/><rect x='66' y='8' width='8' height='18' rx='4' fill='%23444'/><rect x='24' y='48' width='24' height='14' rx='3' fill='white' opacity='.9'/><rect x='24' y='68' width='40' height='14' rx='3' fill='white' opacity='.6'/></svg>">
+</head>
+<body>
+<header id="topbar">
+  <button id="menu-toggle" title="Toggle sidebar" aria-label="Toggle sidebar">☰</button>
+  <h1>exocalendar</h1>
+  <button id="today-btn">Today</button>
+  <div class="nav-arrows">
+    <button id="prev-btn" title="Previous (←)">‹</button>
+    <button id="next-btn" title="Next (→)">›</button>
+  </div>
+  <h2 id="period-label"></h2>
+  <div class="spacer"></div>
+  <div id="view-switch" role="tablist">
+    <button data-view="month" title="Month (m)">Month</button>
+    <button data-view="week" title="Week (w)">Week</button>
+    <button data-view="day" title="Day (d)">Day</button>
+  </div>
+</header>
+
+<div id="layout">
+  <aside id="sidebar">
+    <button id="new-event-btn" class="primary">+ New event</button>
+    <h3>Calendars</h3>
+    <ul id="calendar-list"></ul>
+    <button id="new-calendar-btn" class="ghost">+ New calendar</button>
+    <div class="sidebar-footer">
+      <label class="import-label ghost" for="import-file">Import .ics…</label>
+      <input type="file" id="import-file" accept=".ics,text/calendar" hidden>
+    </div>
+  </aside>
+
+  <main id="main">
+    <div id="grid-root"></div>
+  </main>
+</div>
+
+<!-- event editor -->
+<dialog id="editor">
+  <form id="editor-form" method="dialog">
+    <input type="text" id="ev-summary" placeholder="Add title" autocomplete="off" required>
+    <div class="row">
+      <label class="check"><input type="checkbox" id="ev-allday"> All day</label>
+      <select id="ev-cal"></select>
+    </div>
+    <div class="row" id="when-times">
+      <input type="date" id="ev-start-date" required>
+      <input type="time" id="ev-start-time" step="300">
+      <span>–</span>
+      <input type="date" id="ev-end-date" required>
+      <input type="time" id="ev-end-time" step="300">
+    </div>
+    <div class="row">
+      <select id="rec-freq">
+        <option value="">Does not repeat</option>
+        <option value="DAILY">Daily</option>
+        <option value="WEEKLY">Weekly</option>
+        <option value="MONTHLY">Monthly</option>
+        <option value="YEARLY">Yearly</option>
+      </select>
+      <span id="rec-interval-wrap" hidden>every
+        <input type="number" id="rec-interval" min="1" max="99" value="1" style="width:3.2em">
+        <span id="rec-unit"></span>
+      </span>
+    </div>
+    <div class="row" id="rec-weekdays" hidden></div>
+    <div class="row" id="rec-monthly-mode" hidden>
+      <label class="check"><input type="radio" name="monthly-mode" value="bymonthday" checked> <span id="monthly-bydate-label"></span></label>
+      <label class="check"><input type="radio" name="monthly-mode" value="byday"> <span id="monthly-byday-label"></span></label>
+    </div>
+    <div class="row" id="rec-ends" hidden>
+      <select id="rec-end-mode">
+        <option value="never">Never ends</option>
+        <option value="until">Ends on date</option>
+        <option value="count">Ends after N times</option>
+      </select>
+      <input type="date" id="rec-until" hidden>
+      <input type="number" id="rec-count" min="1" max="999" value="10" style="width:4em" hidden>
+    </div>
+    <details id="rec-raw-wrap">
+      <summary>RRULE</summary>
+      <input type="text" id="rec-raw" placeholder="FREQ=WEEKLY;BYDAY=MO,WE" spellcheck="false">
+      <div id="rec-raw-note" class="note" hidden>This rule uses features beyond the builder above; it is applied as written.</div>
+    </details>
+    <input type="text" id="ev-location" placeholder="Location" autocomplete="off">
+    <textarea id="ev-description" placeholder="Description" rows="3"></textarea>
+    <div class="row buttons">
+      <button type="button" id="ev-delete" class="danger" hidden>Delete</button>
+      <div class="spacer"></div>
+      <button type="button" id="ev-cancel" class="ghost">Cancel</button>
+      <button type="submit" class="primary" id="ev-save">Save</button>
+    </div>
+  </form>
+</dialog>
+
+<!-- this / future / all chooser -->
+<dialog id="scope-dialog">
+  <form method="dialog">
+    <p id="scope-question">Apply to…</p>
+    <div class="scope-buttons">
+      <button value="this">This event</button>
+      <button value="future">This and following events</button>
+      <button value="all">All events</button>
+    </div>
+    <button value="" class="ghost">Cancel</button>
+  </form>
+</dialog>
+
+<!-- calendar settings -->
+<dialog id="cal-dialog">
+  <form id="cal-form" method="dialog">
+    <h3 id="cal-dialog-title">Calendar</h3>
+    <input type="text" id="cal-name" placeholder="Name" required>
+    <div class="row">
+      <label>Color <input type="color" id="cal-color"></label>
+    </div>
+    <div id="cal-links" hidden>
+      <div class="row"><button type="button" id="cal-export" class="ghost">Download .ics</button>
+      <button type="button" id="cal-feed" class="ghost">Copy feed URL</button></div>
+      <div class="note">The feed URL grants read-only access without a password. <button type="button" id="cal-rotate" class="linklike">Reset it</button></div>
+    </div>
+    <div class="row buttons">
+      <button type="button" id="cal-delete" class="danger" hidden>Delete calendar</button>
+      <div class="spacer"></div>
+      <button type="button" id="cal-cancel" class="ghost">Cancel</button>
+      <button type="submit" class="primary">Save</button>
+    </div>
+  </form>
+</dialog>
+
+<div id="toast" hidden></div>
+<script src="app.js"></script>
+</body>
+</html>

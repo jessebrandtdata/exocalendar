@@ -173,8 +173,17 @@ class WebApi:
                         vcal.find_children("VEVENT"), tz,
                         range_start, range_end, limit=_OCC_LIMIT,
                     )
-                except Exception:
-                    continue  # never let one broken resource hide the calendar
+                except Exception as exc:  # noqa: BLE001
+                    # never let one broken resource hide the whole calendar,
+                    # but leave a trace so the omission is discoverable
+                    import sys
+
+                    print(
+                        f"exocalendar: skipping unexpandable resource "
+                        f"{cal.id}/{res.href}: {exc}",
+                        file=sys.stderr,
+                    )
+                    continue
                 for occ in occs:
                     out.append(self._occ_json(cal, res, occ))
         out.sort(key=lambda o: (o["start"], o["cal"]))

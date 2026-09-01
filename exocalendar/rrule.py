@@ -46,6 +46,10 @@ _BYDAY_RE = re.compile(r"([+-]?\d{1,2})?(MO|TU|WE|TH|FR|SA|SU)")
 # per frequency (rare conjunctions like "Sep 22 falling on a Friday" gap for
 # years' worth of DAILY periods)
 _EMPTY_LIMITS = {"YEARLY": 120, "MONTHLY": 1500, "WEEKLY": 6500, "DAILY": 45_000}
+
+# expand(): total occurrences walked per resource before giving up loudly
+# (an error beats silently dropping in-range events)
+_SCAN_HARD_CAP = 2_000_000
 _SUBDAY_STEP_LIMIT = 200_000
 
 
@@ -197,7 +201,9 @@ class RRule:
             if until.tzinfo is not None and tzinfo is None:
                 until = until.replace(tzinfo=None)
             elif until.tzinfo is None and tzinfo is not None:
-                until = until.replace(tzinfo=timezone.utc)
+                # RFC 5545 calls a bare DATE-TIME "local time"; DTSTART's zone
+                # is the only local zone in scope (dateutil rejects this input)
+                until = until.replace(tzinfo=tzinfo)
 
         yielded = 0
         for naive in self._iterate_naive(base):
@@ -213,7 +219,11 @@ class RRule:
     def _timeset(self, base: datetime) -> list[time]:
         hours = self.byhour or (base.hour,)
         minutes = self.byminute or (base.minute,)
-        seconds = self.bysecond or (base.second,)
+        # BYSECOND=60 is legal in the RFC (leap seconds) but unrepresentable
+        # in datetime.time; drop it rather than crash
+        seconds = tuple(s for s in (self.bysecond or (base.second,)) if s < 60) or (
+            base.second,
+        )
         return sorted(time(h, m, s) for h, m, s in product(hours, minutes, seconds))
 
     def _iterate_naive(self, base: datetime) -> Iterator[datetime]:
@@ -471,7 +481,9 @@ class RRule:
                     pointer += step
                     continue
                 minutes = self.byminute or (base.minute,)
-                seconds = self.bysecond or (base.second,)
+                seconds = tuple(
+                    s for s in (self.bysecond or (base.second,)) if s < 60
+                ) or (base.second,)
                 slots = [
                     pointer.replace(minute=m, second=s)
                     for m in sorted(minutes)
@@ -483,7 +495,9 @@ class RRule:
                 ):
                     pointer += step
                     continue
-                seconds = self.bysecond or (base.second,)
+                seconds = tuple(
+                    s for s in (self.bysecond or (base.second,)) if s < 60
+                ) or (base.second,)
                 slots = [pointer.replace(second=s) for s in sorted(seconds)]
             else:  # SECONDLY
                 if (
@@ -622,14 +636,22 @@ def expand(
             explicit_ends: dict[str, DTValue] = {}
             if rrule_line is not None:
                 rule = RRule.parse(rrule_line.value)
-                scanned = 0
+                scanned = kept = 0
                 for value in rule.iterate(start.value):
-                    dtv = DTValue(value=value, is_date=start.is_date, tzid=start.tzid)
-                    if _instant(dtv) >= range_end:
-                        break
-                    starts.append(dtv)
                     scanned += 1
-                    if scanned >= limit:
+                    if scanned > _SCAN_HARD_CAP:
+                        raise RRuleOverflow(
+                            "recurrence set too large to expand for this range"
+                        )
+                    dtv = DTValue(value=value, is_date=start.is_date, tzid=start.tzid)
+                    inst = _instant(dtv)
+                    if inst >= range_end:
+                        break
+                    if inst + duration <= range_start:
+                        continue  # before the window: iterate past, don't retain
+                    starts.append(dtv)
+                    kept += 1
+                    if kept >= limit:
                         break
             else:
                 starts.append(start)
