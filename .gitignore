@@ -5,3 +5,5 @@ build/
 dist/
 .pytest_cache/
 .venv/
+# specs and plans live in jessebrandtdata/specs
+docs/superpowers/

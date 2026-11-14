@@ -5,7 +5,7 @@ Self-hostable CalDAV calendar server + web UI. **Zero runtime dependencies**
 dependencies (`pytest`, `python-dateutil`, `caldav`) are fine in `[dev]`.
 Nothing in the code may assume a particular host, network, or tailnet.
 
-Spec of record: `docs/superpowers/specs/2026-08-31-exocalendar-design.md`.
+Spec of record: `specs:exocalendar/specs/2026-08-31-exocalendar-design.md`.
 
 ## Architecture (one line each)
 
