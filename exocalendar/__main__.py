@@ -8,7 +8,15 @@ import sys
 from pathlib import Path
 
 from . import __version__
-from .config import Config, default_config_path, interactive_setup, load, load_or_setup, save
+from .config import (
+    Config,
+    default_config_path,
+    default_data_dir,
+    interactive_setup,
+    load,
+    load_or_setup,
+    save,
+)
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -56,6 +64,19 @@ def main(argv: list[str] | None = None) -> int:
 
     if args.command in (None, "serve"):
         from .server import serve
+
+        if not config_path.is_file() and not sys.stdin.isatty():
+            # nobody to prompt (a service manager, a launcher): ask in the browser
+            from .setup import SetupTarget
+
+            target = SetupTarget(
+                config_path=config_path,
+                data_dir=default_data_dir(),
+                bind=getattr(args, "bind", None) or "127.0.0.1",
+                port=getattr(args, "port", None) or 5232,
+            )
+            serve(None, no_auth=getattr(args, "no_auth", False), setup=target)
+            return 0
 
         cfg = load_or_setup(config_path)
         if getattr(args, "bind", None):
