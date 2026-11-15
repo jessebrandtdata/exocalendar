@@ -68,6 +68,11 @@ async function api(method, path, body, raw = false) {
     if (!raw) opts.headers["Content-Type"] = "application/json";
   }
   const resp = await fetch(path, opts);
+  if (resp.status === 401) {
+    // the session ended: back to the sign-in form
+    location.assign("/login");
+    throw new Error("Signed out");
+  }
   if (resp.status === 204) return null;
   const isJson = (resp.headers.get("Content-Type") || "").includes("json");
   const data = isJson ? await resp.json() : await resp.text();
