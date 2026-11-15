@@ -1,8 +1,13 @@
-"""HTTP server shell: routing, Basic auth gate, TLS.
+"""HTTP server shell: routing, the auth gate, TLS.
 
 Routes: `/dav/*` and `/.well-known/caldav` → CalDAV; `/api/*` → the web
 UI's JSON API; `/feed/*` → token-authed read-only ICS feeds (exempt from
-Basic auth); everything else → the static web UI.
+auth); `/login` and `/logout` → the browser's sign-in form; everything else
+→ the static web UI.
+
+Two ways in: HTTP Basic (calendar apps, scripts) and the session cookie the
+sign-in form sets (the browser). Only the DAV paths challenge for Basic; a
+browser is sent to the form, so it never shows its own password dialog.
 
 A server started with no config serves only the first-run form (`setup.py`)
 until the account exists, then switches to the routes above in place.
@@ -14,10 +19,12 @@ import ssl
 import threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from ipaddress import ip_address
+from urllib.parse import urlsplit
 
 from . import __version__
+from . import login as weblogin
 from . import setup as websetup
-from .auth import check_basic
+from .auth import check_basic, check_session, new_session, session_cookie, session_from_cookie
 from .config import Config
 from .dav import DavHandlerLogic
 from .store import Store
@@ -69,23 +76,57 @@ class _Handler(BaseHTTPRequestHandler):
         if path.startswith("/feed/"):
             return srv.webapi.handle_feed(path)
 
-        if not srv.no_auth and not check_basic(
-            self.headers.get("Authorization"), srv.cfg
-        ):
-            return (
-                401,
-                {
-                    "WWW-Authenticate": 'Basic realm="exocalendar"',
-                    "Content-Type": "text/plain",
-                },
-                b"authentication required",
-            )
+        route = path.split("?", 1)[0]
+        is_dav = route in ("/.well-known/caldav", "/dav") or route.startswith("/dav/")
+        is_api = route == "/api" or route.startswith("/api/")
+        secure = srv.scheme == "https" or self.headers.get("X-Forwarded-Proto") == "https"
 
-        if path == "/.well-known/caldav" or path == "/dav" or path.startswith("/dav/"):
+        basic = check_basic(self.headers.get("Authorization"), srv.cfg)
+        session = check_session(session_from_cookie(self.headers.get("Cookie")), srv.cfg)
+
+        if route == "/login":
+            return weblogin.handle(
+                self.command, body, srv.cfg, srv.no_auth or session, secure
+            )
+        if route == "/logout":
+            if self.command != "POST":
+                return 405, {"Allow": "POST"}, b""
+            return weblogin.sign_out(secure)
+
+        if not (srv.no_auth or basic or session):
+            if is_dav:
+                return (
+                    401,
+                    {
+                        "WWW-Authenticate": 'Basic realm="exocalendar"',
+                        "Content-Type": "text/plain",
+                    },
+                    b"authentication required",
+                )
+            if not is_api and self.command in ("GET", "HEAD"):
+                return 303, {"Location": "/login", "Content-Type": "text/plain"}, b""
+            # no challenge header: the page sends the browser to the form
+            return 401, {"Content-Type": "text/plain"}, b"authentication required"
+
+        if session and not basic and not self._same_origin():
+            return 403, {"Content-Type": "text/plain"}, b"cross-origin request refused"
+
+        if is_dav:
             return srv.dav.handle(self.command, path, dict(self.headers), body)
-        if path == "/api" or path.startswith("/api/"):
+        if is_api:
             return srv.webapi.handle_api(self.command, path, body)
         return srv.webapi.handle_static(self.command, path)
+
+    def _same_origin(self) -> bool:
+        """A cookie rides along on requests other sites start, so a write that
+        relies on one must come from this server's own pages."""
+        if self.command in ("GET", "HEAD", "OPTIONS", "PROPFIND", "REPORT"):
+            return True
+        origin = self.headers.get("Origin")
+        if origin is None:
+            return True  # not a browser: nothing attached the cookie for it
+        hosts = {self.headers.get("Host"), self.headers.get("X-Forwarded-Host")}
+        return urlsplit(origin).netloc in hosts - {None}
 
     def log_message(self, format, *args):  # noqa: A002 - stdlib signature
         pass  # quiet by default; systemd/journald captures stderr otherwise
@@ -137,16 +178,20 @@ class ExoCalendarServer(ThreadingHTTPServer):
         self.cfg = cfg  # last: a request sees cfg only once the rest exists
 
     def first_run(self, method, path, body, client_ip, headers):
-        """A request while there is no account yet."""
+        """A request while there is no account yet. The browser that creates
+        the account leaves signed in."""
         if not websetup.client_allowed(client_ip, headers):
             return websetup.REFUSED
         with self._setup_lock:
             if self.cfg is not None:  # another request finished setup first
                 return 303, {"Location": "/", "Content-Type": "text/plain"}, b""
             status, out_headers, out_body, cfg = websetup.handle(method, path, body, self.setup)
+            out_headers = dict(out_headers)
             if cfg is not None:
                 self._activate(cfg)
-        return status, dict(out_headers), out_body
+                # first run is plain HTTP and refuses proxies, so never Secure
+                out_headers["Set-Cookie"] = session_cookie(new_session(cfg), False)
+        return status, out_headers, out_body
 
 
 def serve(
@@ -164,8 +209,8 @@ def serve(
     bind = cfg.bind if cfg else setup.bind
     if server.scheme == "http" and not _is_loopback(bind):
         print(
-            "WARNING: plain HTTP on a non-loopback bind — Basic auth credentials "
-            "travel unencrypted. Configure tls_cert/tls_key or a reverse proxy."
+            "WARNING: plain HTTP on a non-loopback bind — passwords and the "
+            "session cookie travel unencrypted. Configure tls_cert/tls_key or a reverse proxy."
         )
     try:
         server.serve_forever()

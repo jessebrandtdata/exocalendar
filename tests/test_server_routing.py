@@ -70,8 +70,10 @@ def test_api_requires_auth(server):
 
 
 def test_static_requires_auth(server):
-    status, _, _ = request(server, "GET", "/")
-    assert status == 401
+    status, headers, _ = request(server, "GET", "/")
+    assert status == 303 and headers["Location"] == "/login"
+    status, _, _ = request(server, "GET", "/app.js")
+    assert status == 303
 
 
 def test_feed_is_exempt_from_basic_auth(server):

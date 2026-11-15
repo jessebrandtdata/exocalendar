@@ -99,6 +99,8 @@ button.linklike { border: none; background: none; padding: 0; text-decoration: u
 #calendar-list li:hover .gear { visibility: visible; }
 .sidebar-footer { margin-top: auto; display: flex; }
 .import-label { text-align: center; flex: 1; }
+.sign-out { display: flex; margin-top: 6px; }
+.sign-out button { flex: 1; }
 
 #main { flex: 1; min-width: 0; display: flex; flex-direction: column; }
 #grid-root { flex: 1; min-height: 0; display: flex; flex-direction: column; }
