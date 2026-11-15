@@ -3,15 +3,20 @@
 Routes: `/dav/*` and `/.well-known/caldav` → CalDAV; `/api/*` → the web
 UI's JSON API; `/feed/*` → token-authed read-only ICS feeds (exempt from
 Basic auth); everything else → the static web UI.
+
+A server started with no config serves only the first-run form (`setup.py`)
+until the account exists, then switches to the routes above in place.
 """
 
 from __future__ import annotations
 
 import ssl
+import threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from ipaddress import ip_address
 
 from . import __version__
+from . import setup as websetup
 from .auth import check_basic
 from .config import Config
 from .dav import DavHandlerLogic
@@ -58,6 +63,9 @@ class _Handler(BaseHTTPRequestHandler):
         body = self.rfile.read(length) if length else b""
         path = self.path
 
+        if srv.cfg is None:
+            return srv.first_run(self.command, path, body, self.client_address[0], dict(self.headers))
+
         if path.startswith("/feed/"):
             return srv.webapi.handle_feed(path)
 
@@ -90,20 +98,28 @@ class _Handler(BaseHTTPRequestHandler):
 class ExoCalendarServer(ThreadingHTTPServer):
     daemon_threads = True
 
-    def __init__(self, cfg: Config, no_auth: bool = False):
-        if no_auth and not _is_loopback(cfg.bind):
+    def __init__(
+        self,
+        cfg: Config | None,
+        no_auth: bool = False,
+        setup: websetup.SetupTarget | None = None,
+    ):
+        """`cfg=None` with a `setup` target starts in first-run mode."""
+        if cfg is None and setup is None:
+            raise ValueError("a server needs a config or a setup target")
+        bind = cfg.bind if cfg else setup.bind
+        if no_auth and not _is_loopback(bind):
             raise SystemExit(
-                f"--no-auth is only allowed on loopback binds, not {cfg.bind!r}"
+                f"--no-auth is only allowed on loopback binds, not {bind!r}"
             )
-        self.cfg = cfg
+        self.cfg = None
         self.no_auth = no_auth
-        self.store = Store(cfg.data_dir)
-        self.dav = DavHandlerLogic(self.store)
-        from .webapi import WebApi
-
-        self.webapi = WebApi(self.store)
-        super().__init__((cfg.bind, cfg.port), _Handler)
-        if cfg.tls_cert and cfg.tls_key:
+        self.setup = setup
+        self._setup_lock = threading.Lock()
+        if cfg:
+            self._activate(cfg)
+        super().__init__((bind, cfg.port if cfg else setup.port), _Handler)
+        if cfg and cfg.tls_cert and cfg.tls_key:
             ctx = ssl.SSLContext(ssl.PROTOCOL_TLS_SERVER)
             ctx.load_cert_chain(cfg.tls_cert, cfg.tls_key)
             self.socket = ctx.wrap_socket(self.socket, server_side=True)
@@ -112,11 +128,41 @@ class ExoCalendarServer(ThreadingHTTPServer):
             self.scheme = "http"
 
 
-def serve(cfg: Config, no_auth: bool = False) -> None:
-    server = ExoCalendarServer(cfg, no_auth=no_auth)
+    def _activate(self, cfg: Config) -> None:
+        from .webapi import WebApi
+
+        self.store = Store(cfg.data_dir)
+        self.dav = DavHandlerLogic(self.store)
+        self.webapi = WebApi(self.store)
+        self.cfg = cfg  # last: a request sees cfg only once the rest exists
+
+    def first_run(self, method, path, body, client_ip, headers):
+        """A request while there is no account yet."""
+        if not websetup.client_allowed(client_ip, headers):
+            return websetup.REFUSED
+        with self._setup_lock:
+            if self.cfg is not None:  # another request finished setup first
+                return 303, {"Location": "/", "Content-Type": "text/plain"}, b""
+            status, out_headers, out_body, cfg = websetup.handle(method, path, body, self.setup)
+            if cfg is not None:
+                self._activate(cfg)
+        return status, dict(out_headers), out_body
+
+
+def serve(
+    cfg: Config | None, no_auth: bool = False, setup: websetup.SetupTarget | None = None
+) -> None:
+    server = ExoCalendarServer(cfg, no_auth=no_auth, setup=setup)
     host, port = server.server_address[:2]
-    print(f"exocalendar serving on {server.scheme}://{host}:{port}/")
-    if server.scheme == "http" and not _is_loopback(cfg.bind):
+    print(f"exocalendar serving on {server.scheme}://{host}:{port}/", flush=True)
+    if cfg is None:
+        print(
+            f"No config at {setup.config_path} yet: open the address above in a "
+            "browser to create the account, or run `exocalendar setup` here.",
+            flush=True,
+        )
+    bind = cfg.bind if cfg else setup.bind
+    if server.scheme == "http" and not _is_loopback(bind):
         print(
             "WARNING: plain HTTP on a non-loopback bind — Basic auth credentials "
             "travel unencrypted. Configure tls_cert/tls_key or a reverse proxy."

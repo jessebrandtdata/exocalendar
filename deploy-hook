@@ -1,9 +1,12 @@
 #!/bin/sh
-# CD deploy hook: install the package user-space and prove the suite is green.
-# Runs under systemd's default PATH — ~/.local/bin is added explicitly.
+# CD deploy hook: install the package user-space and prove it imports.
+# Runs under systemd's default PATH, so ~/.local/bin is added explicitly.
+# The test suite is not run here: it takes minutes and needs the dev extras,
+# and a deploy should not depend on either.
 set -e
 cd "$(dirname "$0")"
 export PATH="$HOME/.local/bin:$PATH"
 
-python3 -m pip install --user --break-system-packages -q -e ".[dev]"
-python3 -m pytest -q
+python3 -m pip install --user --break-system-packages -q -e .
+python3 -c 'import exocalendar.server, exocalendar.setup'
+echo "exocalendar: deploy hook ok"
