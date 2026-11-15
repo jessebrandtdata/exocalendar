@@ -29,6 +29,13 @@ exocalendar serve
 Or from a clone: `python3 -m exocalendar serve` (no build step, no
 dependencies to install).
 
+Started without a config and without a terminal (a service manager, a
+launcher), `exocalendar serve` cannot prompt, so it serves a one-page setup
+form at `/` until the account exists and then switches to the calendar in
+place. The form is only offered to a direct connection from a loopback,
+private or VPN address; a public or proxied client is told to run
+`exocalendar setup` on the host.
+
 Open `http://localhost:5232/` for the web UI. The config lives at
 `~/.config/exocalendar/config.toml` and stays hand-editable; events live under
 `~/.local/share/exocalendar/` (both configurable).
@@ -58,7 +65,7 @@ non-loopback binds.
 
 ```
 exocalendar serve [--bind ADDR] [--port N] [--no-auth]
-exocalendar setup                 # interactive first-run config
+exocalendar setup                 # first-run config in the terminal
 exocalendar passwd                # change the password
 exocalendar import FILE --calendar ID
 exocalendar export ID > backup.ics

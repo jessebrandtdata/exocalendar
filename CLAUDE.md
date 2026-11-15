@@ -23,6 +23,9 @@ Spec of record: `specs:exocalendar/specs/2026-08-31-exocalendar-design.md`.
   an `.ics` rewrite so clients can't disagree.
 - `server.py` — stdlib HTTP shell: routing, Basic auth (`/feed/*` exempt,
   token-authed), TLS.
+- `setup.py` — pure request→response logic for the first-run form a server
+  with no config serves; `server.py` switches to the calendar once it is
+  submitted.
 
 ## Testing
 
