@@ -21,8 +21,12 @@ Spec of record: `specs:exocalendar/specs/2026-08-31-exocalendar-design.md`.
 - `webapi.py` + `static/` — JSON API + vanilla-JS UI (no framework, no build
   step). Both the DAV layer and the web API sit on `store.py`; every edit is
   an `.ics` rewrite so clients can't disagree.
-- `server.py` — stdlib HTTP shell: routing, Basic auth (`/feed/*` exempt,
-  token-authed), TLS.
+- `server.py` — stdlib HTTP shell: routing, the auth gate (`/feed/*` exempt,
+  token-authed), TLS. Basic for calendar apps, a session cookie for the
+  browser; only the DAV paths challenge for Basic.
+- `login.py` — pure request→response logic for the browser's sign-in form.
+  The session token is an HMAC keyed by the stored password hash (`auth.py`):
+  no session state on disk, and `exocalendar passwd` ends every session.
 - `setup.py` — pure request→response logic for the first-run form a server
   with no config serves; `server.py` switches to the calendar once it is
   submitted.

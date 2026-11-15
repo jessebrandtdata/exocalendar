@@ -148,8 +148,13 @@ def test_first_run_then_login(server):
     )
     assert status == 303 and headers["Location"] == "/"
 
+    # the browser that created the account is signed in already
+    cookie = {"Cookie": headers["Set-Cookie"].split(";", 1)[0]}
+    assert request(server, "GET", "/", headers=cookie)[0] == 200
+
     # the same process now serves the calendar, behind the new password
-    assert request(server, "GET", "/")[0] == 401
+    status, headers, _ = request(server, "GET", "/")
+    assert status == 303 and headers["Location"] == "/login"
     auth = {"Authorization": "Basic " + base64.b64encode(b"cal:pw-1").decode()}
     assert request(server, "PROPFIND", "/dav/", headers=auth)[0] == 207
     # and the setup route is gone

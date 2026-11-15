@@ -15,8 +15,8 @@ with Python 3.11+ runs it — a laptop, a Raspberry Pi, a $3 VPS.
   subscribe to
 - 🗂 Your data is plain `.ics` files in a directory you own. Back it up with
   `rsync`; read it with anything.
-- 🔒 Single user, HTTP Basic auth (PBKDF2-hashed password), optional built-in
-  TLS. Multi-user is a designed-for later, not a v1 feature.
+- 🔒 Single user, PBKDF2-hashed password: a sign-in form and session cookie
+  for the browser, HTTP Basic for calendar apps. Optional built-in TLS. Multi-user is a designed-for later, not a v1 feature.
 
 ## Install
 
