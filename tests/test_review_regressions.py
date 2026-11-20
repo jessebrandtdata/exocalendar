@@ -202,3 +202,76 @@ def test_all_day_expand_still_works():
     assert [o.start.value for o in occs] == [
         date(2026, 6, 1), date(2026, 6, 2), date(2026, 6, 3)
     ]
+
+
+# --- import: UIDs that do not make a valid file name -------------------------
+
+def _import_ics(*uids):
+    events = "".join(
+        f"BEGIN:VEVENT\r\nUID:{uid}\r\nDTSTART:2026111{n}T230000Z\r\n"
+        f"DTEND:2026111{n}T233000Z\r\nSUMMARY:E{n}\r\nEND:VEVENT\r\n"
+        for n, uid in enumerate(uids)
+    )
+    return ("BEGIN:VCALENDAR\r\nVERSION:2.0\r\nPRODID:-//x//EN\r\n" + events
+            + "END:VCALENDAR\r\n").encode()
+
+
+def _import(store, body):
+    import json
+
+    from exocalendar.webapi import WebApi
+
+    status, _, out = WebApi(store).handle_api("POST", "/api/import?calendar=c", body)
+    return status, json.loads(out)
+
+
+@pytest.fixture
+def import_store(tmp_path):
+    from exocalendar.store import Store
+
+    store = Store(tmp_path / "data")
+    store.create_calendar("c", "C", "#1b9e77")
+    return store
+
+
+def test_import_keeps_google_uids_that_start_with_an_underscore(import_store):
+    # Google Calendar's own events have ids like "_8co48ga2...@google.com"
+    uid = "_8co48ga27524ab9j6kp42b9k7523cba18grjgb9m6gs46c9g8grj8d1g74@google.com"
+    status, data = _import(import_store, _import_ics(uid))
+    assert status == 200 and data["imported"] == 1 and data["skipped"] == 0
+    (res,) = import_store.list_resources("c")
+    assert res.uid == uid
+    assert res.href == uid.lstrip("_") + ".ics"
+
+
+@pytest.mark.parametrize("uid", ["...", "-leading-dash", "_", "%41"])
+def test_import_any_uid_gets_a_valid_file_name(import_store, uid):
+    _, data = _import(import_store, _import_ics(uid))
+    assert data["imported"] == 1, data
+    assert import_store.list_resources("c")[0].uid == uid
+
+
+def test_import_two_uids_with_the_same_file_name_both_land(import_store):
+    # both reduce to "a_b.ics"; the second must neither overwrite nor be refused
+    _, data = _import(import_store, _import_ics("a/b", "a:b"))
+    assert data["imported"] == 2, data
+    assert {r.uid for r in import_store.list_resources("c")} == {"a/b", "a:b"}
+
+
+def test_reimporting_updates_in_place(import_store):
+    _import(import_store, _import_ics("_g@google.com", "a/b", "a:b"))
+    _, data = _import(import_store, _import_ics("_g@google.com", "a/b", "a:b"))
+    assert data["imported"] == 3
+    assert len(import_store.list_resources("c")) == 3
+
+
+def test_import_says_why_it_skipped(import_store, monkeypatch):
+    from exocalendar.store import BadResource
+
+    def refuse(*args, **kwargs):
+        raise BadResource("no thanks")
+
+    monkeypatch.setattr(import_store, "put", refuse)
+    _, data = _import(import_store, _import_ics("x"))
+    assert data["skipped"] == 1
+    assert data["errors"] == [{"uid": "x", "reason": "no thanks"}]

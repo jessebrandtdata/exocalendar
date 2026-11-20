@@ -10,6 +10,7 @@ rewrites the master.
 
 from __future__ import annotations
 
+import hashlib
 import hmac
 import json
 import mimetypes
@@ -346,16 +347,29 @@ class WebApi:
                 if uid_line is None or not uid_line.value:
                     continue
                 by_uid.setdefault(uid_line.value, []).append(ev)
+        # an event already here keeps its file, whoever named it
+        href_of_uid = {r.uid: r.href for r in self.store.list_resources(cal_id)}
+        taken = set(href_of_uid.values())
         imported = 0
-        skipped = 0
+        errors = []
         for uid, events in by_uid.items():
             resource = _wrap(events, timezones)
+            href = href_of_uid.get(uid)
+            if href is None:
+                href = _href_for(uid)
+                if href in taken:  # another UID reduced to the same name
+                    href = _hashed_href(uid)
             try:
-                self.store.put(cal_id, _href_for(uid), resource.serialize())
-                imported += 1
-            except (BadResource, ValueError):
-                skipped += 1
-        return _json(200, {"imported": imported, "skipped": skipped})
+                self.store.put(cal_id, href, resource.serialize())
+            except (BadResource, ValueError) as exc:
+                errors.append({"uid": uid, "reason": str(exc)})
+                continue
+            href_of_uid[uid] = href
+            taken.add(href)
+            imported += 1
+        return _json(
+            200, {"imported": imported, "skipped": len(errors), "errors": errors}
+        )
 
     def _export(self, cal_id: str) -> str:
         if self.store.get_calendar(cal_id) is None:
@@ -412,8 +426,14 @@ def _slug(name: str) -> str:
 
 
 def _href_for(uid: str) -> str:
-    safe = re.sub(r"[^A-Za-z0-9._@%-]", "_", uid)[:200].lstrip(".")
+    # the store wants a letter or digit first; Google's UIDs start with "_"
+    safe = re.sub(r"[^A-Za-z0-9._@%-]", "_", uid)[:200]
+    safe = re.sub(r"^[^A-Za-z0-9]+", "", safe)
     return (safe or "event") + ".ics"
+
+
+def _hashed_href(uid: str) -> str:
+    return "uid-" + hashlib.sha256(uid.encode()).hexdigest()[:32] + ".ics"
 
 
 def _utcnow_basic() -> str:

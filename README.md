@@ -58,6 +58,12 @@ in front, because Basic auth over plain HTTP is readable in transit:
 - a reverse proxy (Caddy, nginx) terminating TLS in front of the plain port.
 
 The server warns at startup if it is serving plain HTTP beyond loopback.
+
+When a front like that serves the calendar at its own address, set
+`public_url = "https://…"` in the config. On a host with a service registry
+(`$ANVIL_SERVICES_DIR`, or an existing `~/.local/state/anvil-services/`),
+exocalendar registers that address instead of its bind address, so a launcher
+reading the registry links to the TLS front rather than the plain port.
 `exocalendar serve --no-auth` exists for local trials and refuses to run on
 non-loopback binds.
 
