@@ -15,6 +15,7 @@ until the account exists, then switches to the routes above in place.
 
 from __future__ import annotations
 
+import signal
 import ssl
 import threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -23,6 +24,7 @@ from urllib.parse import urlsplit
 
 from . import __version__
 from . import login as weblogin
+from . import registry
 from . import setup as websetup
 from .auth import check_basic, check_session, new_session, session_cookie, session_from_cookie
 from .config import Config
@@ -212,7 +214,19 @@ def serve(
             "WARNING: plain HTTP on a non-loopback bind — passwords and the "
             "session cookie travel unencrypted. Configure tls_cert/tls_key or a reverse proxy."
         )
+    if threading.current_thread() is threading.main_thread():
+        # a stop from a launcher or service manager is SIGTERM: unwind like Ctrl-C
+        signal.signal(signal.SIGTERM, signal.default_int_handler)
+    reg_dir = registry.services_dir()
+    if reg_dir.is_dir():
+        url = registry.registry_url(cfg, server.scheme, host, port)
+        registry.register(reg_dir, host, port, url)
+        if cfg is not None and cfg.public_url:
+            print(f"registered as {url}", flush=True)
     try:
         server.serve_forever()
     except KeyboardInterrupt:
         server.shutdown()
+    finally:
+        if reg_dir.is_dir():
+            registry.unregister(reg_dir)
