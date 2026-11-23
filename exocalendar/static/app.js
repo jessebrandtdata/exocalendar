@@ -944,7 +944,8 @@ function wire() {
     try {
       const text = await file.text();
       const res = await api("POST", `/api/import?calendar=${target.id}`, text, true);
-      toast(`Imported ${res.imported} event(s) into ${target.displayname}.`);
+      const skipped = res.skipped ? ` Skipped ${res.skipped}: ${res.errors[0].reason}` : "";
+      toast(`Imported ${res.imported} event(s) into ${target.displayname}.${skipped}`);
       refresh();
     } catch (err) {
       toast(`Import failed: ${err.message}`);

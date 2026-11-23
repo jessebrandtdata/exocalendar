@@ -33,6 +33,7 @@ class Config:
     port: int = 5232
     tls_cert: Path | None = None
     tls_key: Path | None = None
+    public_url: str | None = None
 
 
 def load(path: Path) -> Config:
@@ -47,6 +48,7 @@ def load(path: Path) -> Config:
             port=int(raw.get("port", 5232)),
             tls_cert=Path(raw["tls_cert"]).expanduser() if raw.get("tls_cert") else None,
             tls_key=Path(raw["tls_key"]).expanduser() if raw.get("tls_key") else None,
+            public_url=str(raw["public_url"]) if raw.get("public_url") else None,
         )
     except KeyError as exc:
         raise ValueError(f"config {path} is missing required key {exc}") from None
@@ -71,6 +73,10 @@ def save(path: Path, cfg: Config) -> None:
     else:
         lines.append('# tls_cert = "/path/to/cert.pem"')
         lines.append('# tls_key = "/path/to/key.pem"')
+    if cfg.public_url:
+        lines.append(f"public_url = {_toml_str(cfg.public_url)}")
+    else:
+        lines.append('# public_url = "https://calendar.example.com"  # address of a TLS front, if any')
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text("\n".join(lines) + "\n")
 
